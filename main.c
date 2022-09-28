@@ -1,172 +1,231 @@
-#define F_CPU 16000000UL
-#include <avr/io.h>
-#include <avr/interrupt.h>
-//#include <util/atomic.h>
+#include "main.h"
+//---------------------------------------------------
 
-void port_ini (void) // инициализация портов (неиспользуемые ножки?)
+//--------------------------------------------------- 
+void port_ini(void)
 {
-	// определяем выходные
-	DDRA = 0b11111111; // выход PA0-PA7-светодиоды
-	PORTA = 0b11111111; //отключаем светодиоды
-	
-	DDRB = (1<<PB0)|(1<<PB1)|(1<<PB2); // выходы на оптику и блокировки драйвера: ERR, DR_PPN_OFF_MCU, DR_INV_OFF_MCU;
-	//PORTB = (1<<PB0); //проверен ERR
-	
-	// определяем входные
-	DDRC = 0b00000000; // входы: RESET, ERR_DR_PPN, ERR_DR_INV;
-	PORTC |= (1<<PC3); // свободный пин 21 в PullUp 
-	
-	DDRD = (1<<PD2)|(1<<PD3); // входы: I_MAX, ERR_NAPR_1;
-	
-	//DDRE = (1<<PE0); //входы: ERR_NAPR_2; // по ТЗ не востребован
+	DDRA    = 0b11110000; 	// индикация/кнопки
+	PORTA  |= 0b00001111;   // моргнем/подтяжка к питанию
 }
-	
-void interrupt_ini (void) // инициализация прерываний 
+
+void init_PWM_timer_0 (void) //используеться  в delay!
 {
-	//? General Interrupt Flag – GIFR
+
+}
+
+void init_CTC_timer_2 (void) //  под опрос кнопок
+{
+	//11 0x014 - TIMER2 COMP
 	
-	//------------INT 0,1 -- MCUCR --- 
-	GICR |= (1<<INT0)|(1<<INT1); // разрешаем прерывание на выводах
-	//-I_MAX
-	MCUCR &= ~((1<<ISC01)|(1<<ISC00)); //0 0 The low level of INT0 generates an interrupt request // срабатывание по минимальному уровню, обрабатываются асинхронно
-	//-ERR_NAPR_1
-	//MCUCR &= ~((1<<ISC11)|(1<<ISC10)); //0 0 The low level of INT1 generates an interrupt request.
+	TCCR2 |= (1<<WGM21); // WGM21 - 1, WGM20 - 0 -- режиим CTC, пос равнению
+	TIMSK |= (1<<OCIE2); // тип прерываний в 4Bit
+	OCR2   = 0b11111111; //число для сравнения со счетчиком TCNT
+	TCCR2 |= (1<<CS20)|(1<<CS21)|(1<<CS22); //задаем делитель частоты 1024
+}
+//--------- Timer 1/Timer 3 - генераторы ---------------------
+
+void init_PWM_timer_1(void) // функция проверена
+{
+	DDRD  = (1<<PD5);  //OC1A
+	DDRE  = (1<<PE2);  //OC1B
+	// COM1A1|COM1A0|COM1B1|COM1B0|FOC1A|FOC1B|WGM11|WGM10 --- TCCR1A
+	// ICNC1  ICES1  –      WGM13  WGM12 CS12  CS11  CS10  --- TCCR1B   
 	
-	/*//----------- INT2, EMCUCR ---  //ERR_NAPR_2; - по ТЗ не востребован
-	GICR |= (1<<INT2); по ТЗ не востребован 
-	//ERR_NAPR_2  // перепадов сигнала, также происходит асинхронно //x
-	GICR &= ~(1<<INT2);  // отключаем вывод перед вненсением изменений
-	EMCUCR |= (1<<ISC2); // срабатывание по восходящему фронту
-	GIFR |= (1<<INTF1);   //  сброс флага // !Правильно: GIFR = (1<<INTF1) по radidetector, отладить!.
-	GICR |= (1<<INT2);   // включаем прерывание на выводе
+	/* COMnA1/COMnB1   COMnA0/COMnB0
+	0 0 - Normal port operation, OCnA/OCnB disconnected.
+	0 1 - Toggle OCnA/OCnB on Compare Match.
+	1 0 - Clear OCnA/OCnB on Compare Match (Set output to low level).
+	1 1 - Set OCnA/OCnB on Compare Match (Set output to high level).
 	*/
+	TCCR1A |= (1<<COM1A1)|(1<<COM1A0)|(1<<COM1B1);
+	TCCR1A &= ~ (1<<COM1B0);
+	/*
+	WGM13	WGM12	WGM11	WGM10
+    0000 - обычный режим
+    0001 - коррекциЯ фазы PWM, 8-бит
+    0010 - коррекциЯ фазы PWM, 9-бит
+    0011 - коррекциЯ фазы PWM, 10-бит
+    0100 - режим счета импульсов (OCR1A) (сброс при совпадении)
+    0101 - PWM, 8-бит
+    0110 - PWM, 9-бит
+    0111 - PWM, 10-бит
+    1000 - коррекциЯ фазы и частоты PWM (ICR1)
+    1001 - коррекциЯ фазы и частоты PWM (OCR1A)
+    1010 - коррекциЯ фазы PWM (ICR1)
+    1011 - коррекциЯ фазы и частоты PWM (OCR1A)
+    1100 - режим счета импульсов (ICR1) (сброс при совпадении)
+    1101 - резерв
+    1110 - PWM (ICR1)
+    1111 - PWM (OCR1A) */
+
+ 	TCCR1A &= ~(1<<WGM10); // коррекциЯ фазы и частоты
+ 	TCCR1A &= ~(1<<WGM11);
+	TCCR1B &= ~(1<<WGM12);
+	TCCR1B |= (1<<WGM13);
+	/*
+	CS12 CS11 CS10 - clkI/O/1 (No prescaling)
+	*/
+	TCCR1B |=(1<<CS10);
+	TCCR1B &= ~(1<<CS11);
+	TCCR1B &= ~(1<<CS12);
 	
-	//----------- PCINT 10,9,8 ---
-	GICR |= (1<<PCIE1); //включаем группу выводов 8-15
-	// включаем вывода - Pin Change Mask Register
-	//RESET_1
-	PCMSK1 |=(1<<PCINT8);  
-	//ERR_DR_PPN
-	PCMSK1 |=(1<<PCINT9);
-	//ERR_DR_IN
-	PCMSK1 |=(1<<PCINT10);	
+	OCR1A=50;
+	OCR1B=50;
+	ICR1=1000;
+	
 }
-void timer0_ini (void) // задействован на вывод индикации ERR
+
+void init_PWM_timer_3(void) // не проверена работа
 {
-	#define TIMER0_OFF() TCCR0|=(1<<CS02)|(1<<CS01)|(1<<CS00); // 2 - No clock source
-	#define TIMER0_ON()  TCCR0|= (1<<CS02)|(1<<CS00);          // 1024 prescaler
-	#define TOGGLE_OC0() TCCR0|=(1<<FOC0); // изменить состояние вывода OC0
+	DDRD  = (1<<PD4);  //OC3A
+	DDRB  = (1<<PB4);  //OC3B
 	
-	#define timer0_f_100Hz()  OCR0=77; //  100 Hz
-	#define timer0_f_250Hz()  OCR0=30; //  250 Hz
-	#define timer0_f_500Hz()  OCR0=14; //  500 Hz
-	#define timer0_f_1000Hz() OCR0=7;  // 1000 Hz
-	#define timer0_f_2000Hz() OCR0=3;  // 2000 Hz
-			
-	//ERR_DR_PPN - 2 kHz //установки
-	//ERR_DR_INV - 1 kHz
-	//I_MAX - 500 Hz
-	//ERR_NAPR_1 - 250 Hz
-	//ERR_NAPR_2 - 100 HZ
-	//fOCn = (fclk_I/O) / (2 * N *  (1 + OC Rn))
+	TCCR3A |= (1<<COM3A1)|(1<<COM3A0)|(1<<COM3B1);
+	TCCR3A &= ~ (1<<COM3B1);
 	
-	TCCR0 |=(1<<WGM01); //Mode CTC
-	TCCR0 |=(1<<COM00); //Toggle OC0 on Compare Match.
+	TCCR3A &= ~(1<<WGM10); // коррекциЯ фазы и частоты
+	TCCR3A &= ~(1<<WGM11);
+	TCCR3B &= ~(1<<WGM12);
+	TCCR3B |= (1<<WGM13);
 	
-	//----------- варианты отключения ----// всегда ли будет еденица на ножке при отключении таймера !?
-	//TCCR0 &=~(1<<COM00); // 1 - отключаем ножку
-		
-	//timer0_f_100Hz();
-	//TIMER0_ON(); //TCCR0 |= (1<<CS02)|(1<<CS00); // 1024 prescaler
-}
-
-//-------- обработчики прерываний ------------------------
-//выводы на блокировку
-#define DR_PPN_OFF_MCU_SET()      PORTB|=   0b00000010;
-#define DR_INV_OFF_MCU_SET()      PORTB|=  0b00000100;
-#define DR_ALL_OFF_MCU_UNSET() PORTB&=~0b00000110;
-//индикации
-#define LED_HL1_RABOTA_MCU PORTA&=~0b00000001;
-#define LED_HL2_ERR_NAPR_2 PORTA&=~0b00000010;
-#define LED_HL3_ERR_NAPR_1 PORTA&=~0b00000100;
-#define LED_HL4_I_MAX      PORTA&=~0b00001000;
-#define LED_HL5_ERR_DR_INV PORTA&=~0b00010000;
-#define LED_HL6_ERR_DR_PPN PORTA&=~0b00100000;
-#define LED_HL7_ERR        PORTA&=~0b01000000;
-#define LED_HL8_RESET_1    PORTA&=~0b10000000;
-#define LED_CLR_ERR        PORTA|= 0b01111111;
-
-ISR(INT0_vect) // IMAX
-{
-	DR_INV_OFF_MCU_SET();
-	DR_PPN_OFF_MCU_SET();
-	LED_HL4_I_MAX;
-	LED_HL7_ERR;
-}
-
-ISR(INT1_vect) //ERR_NAPR_1
-{
-	DR_PPN_OFF_MCU_SET()
-	DR_INV_OFF_MCU_SET();
-	LED_HL3_ERR_NAPR_1;
-	LED_HL7_ERR;
-}
-//------------------------
-//#define KEY1 _BV(PC0) //вариант
-#define IN_RESET_1     (1<<PINC0)
-#define IN_ERR_DR_PPN  (1<<PINC1)
-#define IN_ERR_DR_INV  (1<<PINC2)
-#define ALL_IN_ERR     (IN_ERR_DR_PPN|IN_ERR_DR_INV)
-
-ISR(PCINT1_vect) //RESET_1, ERR_DR_PPN, ERR_DR_INV
-{
-	asm("nop");
+	TCCR3B |=(1<<CS10);
+	TCCR3B &= ~(1<<CS11);
+	TCCR3B &= ~(1<<CS12);
 	
-	if (PINC&ALL_IN_ERR)
-	{
-		asm("nop");
-				
-		if (PINC&IN_ERR_DR_PPN) //ERR_DR_PPN
-		{
-			DR_PPN_OFF_MCU_SET();
-			LED_HL6_ERR_DR_PPN;
-			LED_HL7_ERR;
-		} 
-		else if (PINC&IN_ERR_DR_INV) //ERR_DR_INV
-		{
-			DR_INV_OFF_MCU_SET();
-			LED_HL5_ERR_DR_INV;
-			LED_HL7_ERR;
-		}
-	} 
-	else if (PINC&IN_RESET_1)
-	{ 
-		asm("nop");
-		
-		if (PINC&IN_RESET_1) 
-		{
-			//снимаем защиты DR и INV
-			TIMER0_OFF(); //отключаем ERR
-			LED_CLR_ERR;//отключаем светодиоды
-		} 
-	}
-	else
-	{
-	}	
+	OCR3A=5;
+	OCR3B=450;
+	ICR3=1000;
+
 }
-
-
-
+//////////////////////////////////////////////////////////////////////////
 int main(void)
-{
-   port_ini();
-   //timer0_ini();
-   interrupt_ini();
-   asm("nop");
-   sei(); //Разрешаем прерывания глобально // cli();
-   
+{ 
+	port_ini();
+	init_PWM_timer_1();
+	//init_PWM_timer_3();
+	
+	//-----------Достаем настройки из памяти --------------
+	//ICR1=EEPROM_read_word(1);//работает, достаем 2 байта
+	unsigned int i = 0;
+	
     while (1) 
     {
-    }
-}
+		if (~PINA & (1<<0)) // 1
+		{
+			_delay_ms(10);
+			i+=10;
+			_delay_ms(200);
+			if (i>=50)
+			{
+				i=0;
+				PORTA  &= ~(0b11110000);				
+			}
+		}
+		else if (~PINA & (1<<1)) // 2
+		{
+			_delay_ms(100);
+			PORTA  |= (0b00100000);
+			i += 2;
+		}
+		else if (~PINA & (1<<2)) // 3
+		{
+			_delay_ms(100);
+			PORTA  |= (0b01000000);
+			i += 3;
+		}
+		else if (~PINA & (1<<3)) // 4
+		{
+			_delay_ms(100);
+			PORTA  |= (0b10000000);
+			i += 4;
+		}
+		
+		switch (i)
+		{
+			case 10:
+			PORTA  |= (0b00010000);
+			break;
+					
+			case 20:
+			PORTA  |= (0b00100000);
+			break;
+					
+			case 30:
+			PORTA  |= (0b01000000);
+			break;
+					
+			case 40:
+			PORTA  |= (0b10000000);
+			break;
+			//------ регулировка параметров--------------
+			case 13:
+			PORTA  &=~(0b01000000);
+			_delay_ms(100);
+			PORTA  |= (0b01000000);
+			ICR1  += 10;
+			i-=3;
+			break;
+			
+			case 14:
+			PORTA  &=~(0b10000000);
+			_delay_ms(100);
+			PORTA  |= (0b10000000);
+			ICR1  -= 10;
+			i-=4;
+			break;
+			
+			case 23:
+			PORTA  &=~(0b01000000);
+			_delay_ms(100);
+			PORTA  |= (0b01000000);
+			_delay_ms(100);
+			PORTA  &=~(0b01000000);
+			OCR1A += 10;
+			i-=3;
+			break;
+			
+			case 24:
+			PORTA  &=~(0b10000000);
+			_delay_ms(100);
+			PORTA  |= (0b10000000);
+			_delay_ms(100);
+			PORTA  &=~(0b10000000);
+			OCR1A -= 10;
+			i-=4;
+			break;
+			
+			case 33:
+			PORTA  &=~(0b01000000);
+			_delay_ms(100);
+			PORTA  |= (0b01000000);
+			_delay_ms(100);
+			PORTA  &=~(0b01000000);
+			OCR1B += 10;
+			i-=3;
+			break;
+			
+			case 34:
+			PORTA  &=~(0b01000000);
+			_delay_ms(100);
+			PORTA  |= (0b01000000);
+			_delay_ms(100);
+			PORTA  &=~(0b01000000);
+			OCR1B -= 10;
+			i-=3;
+			break;	
+		}
+		//------ сброс -----------
+		if (OCR1A>1000)
+		{
+			OCR1A = 5;
+		}
+		if (OCR1B>1000)
+		{
+			OCR1B = 5;
+		}
+		
+			
+	} //while end
+	
+} //main end
 
